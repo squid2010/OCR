@@ -28,15 +28,19 @@ OCR/
 ├── trainingData/         # Dataset directory
 │   ├── Training/
 │   │   ├── training_labels.csv
-│   │   └── [image files]
+│   │   └── training_words
+│   │        └── [image files]
 │   ├── Validation/
 │   │   ├── validation_labels.csv
-│   │   └── [image files]
+│   │   └── validation_words
+│   │        └── [image files]
 │   └── Testing/
 │       ├── testing_labels.csv
-│       └── [image files]
-└── models/               # Saved models directory (created during training)
-```
+│       └── testing_words
+│            └── [image files]
+├── models/               # Saved models directory (created during training)
+└── data                  # Saved data directory (created after evaluation)
+
 
 ## Installation
 
@@ -74,7 +78,7 @@ IMAGE,MEDICINE_NAME,GENERIC_NAME
 To train the OCR model on your dataset:
 
 ```bash
-python train.py
+python3 run_ocr.py --train
 ```
 
 **Training Features**:
@@ -96,7 +100,7 @@ python train.py
 To evaluate the trained model on test/validation data:
 
 ```bash
-python evaluate.py
+python3 run_ocr.py --evaluate
 ```
 
 **Evaluation Features**:
@@ -119,13 +123,13 @@ python evaluate.py
 #### Single Image Prediction
 
 ```bash
-python predict.py --image path/to/image.png --visualize
+python3 run_ocr.py --predict --image path/to/image.png --visualize
 ```
 
 #### Batch Prediction
 
 ```bash
-python predict.py --folder path/to/images/ --output results.csv
+python3 run_ocr.py --predict --folder path/to/images/ --output results.csv
 ```
 
 #### Python API Usage

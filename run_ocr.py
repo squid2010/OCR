@@ -1,300 +1,221 @@
-#!/usr/bin/env python3
-"""
-Utility script for easy OCR model training and testing
-This script provides a simple interface to train, evaluate, and test the OCR model
-"""
-
+# Medical Handwriting OCR System - Main CLI
+import argparse
 import os
 import sys
-import argparse
-import subprocess
-from pathlib import Path
+import tensorflow as tf
+import numpy as np
 
-def check_dependencies():
-    """Check if required dependencies are installed"""
+from config import OCRConfig
+from data_loader import get_data_generators, load_single_image, load_batch_images
+from ocr_model import build_ocr_model, decode_predictions, load_char_mappings
+from predict import predict_medicine_name, batch_predict
+
+def set_seed(seed=42):
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+def train(config):
+    print("Starting training...")
+    set_seed()
+    # Data generators and loader lengths
+    from data_loader import get_data_generators, OCRDataLoader, build_vocab_from_labels
+    train_gen, val_gen, char_to_num, num_to_char = get_data_generators(config)
+    vocab_size = len(char_to_num)
+    print(f"Character vocab size: {vocab_size}")
+
+    # Build loaders for length calculation
+    train_csv = getattr(config, "TRAIN_LABELS", "trainingData/Training/training_labels.csv")
+    val_csv = getattr(config, "VAL_LABELS", "trainingData/Validation/validation_labels.csv")
+    train_img_dir = getattr(config, "TRAIN_DIR", "trainingData/Training/training_words")
+    val_img_dir = getattr(config, "VAL_DIR", "trainingData/Validation/validation_words")
+    img_height = getattr(config, "IMG_HEIGHT", 128)
+    img_width = getattr(config, "IMG_WIDTH", 384)
+    max_text_length = getattr(config, "MAX_TEXT_LENGTH", 32)
+    batch_size = getattr(config, "BATCH_SIZE", 8)
+    use_aug = getattr(config, "USE_AUGMENTATION", True)
+    char_to_num, num_to_char, vocab = build_vocab_from_labels([train_csv, val_csv])
+
+    train_loader = OCRDataLoader(
+        csv_path=train_csv,
+        images_dir=train_img_dir,
+        char_to_num=char_to_num,
+        img_height=img_height,
+        img_width=img_width,
+        max_text_length=max_text_length,
+        batch_size=batch_size,
+        augment=use_aug,
+        shuffle=True,
+    )
+    val_loader = OCRDataLoader(
+        csv_path=val_csv,
+        images_dir=val_img_dir,
+        char_to_num=char_to_num,
+        img_height=img_height,
+        img_width=img_width,
+        max_text_length=max_text_length,
+        batch_size=batch_size,
+        augment=False,
+        shuffle=False,
+    )
+    steps_per_epoch = len(train_loader)
+    validation_steps = len(val_loader)
+
+    # Model
+    model, _ = build_ocr_model(
+        img_height=config.IMG_HEIGHT,
+        img_width=config.IMG_WIDTH,
+        num_chars=vocab_size,
+        max_text_length=config.MAX_TEXT_LENGTH,
+        lstm_units=config.LSTM_UNITS,
+        dropout_rate=config.DROPOUT_RATE
+    )
+    model.summary()
+
+    # Callbacks
+    callbacks = [
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath="models/ocr_model_best.weights.h5",
+            monitor="val_loss",
+            save_best_only=True,
+            save_weights_only=True,
+            verbose=1
+        ),
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_loss",
+            patience=10,
+            restore_best_weights=True
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor="val_loss",
+            factor=0.5,
+            patience=5,
+            min_lr=1e-6,
+            verbose=1
+        )
+    ]
+
+    # Mixed precision
+    if getattr(config, "USE_MIXED_PRECISION", True):
+        tf.keras.mixed_precision.set_global_policy("mixed_float16")
+
+    # Compile
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=config.LEARNING_RATE)
+    )
+
+    # Fit
+    history = model.fit(
+        train_gen,
+        validation_data=val_gen,
+        epochs=config.EPOCHS,
+        callbacks=callbacks,
+        steps_per_epoch=steps_per_epoch,
+        validation_steps=validation_steps
+    )
+
+    # Save final weights
+    model.save_weights("models/ocr_model_final.weights.h5")
+    # Save model for inference
+    model.save("models/ocr_model_prediction.keras")
+    # Save char mappings
+    import pickle
+    with open("models/char_mappings.pkl", "wb") as f:
+        pickle.dump({"char_to_num": char_to_num, "num_to_char": num_to_char}, f)
+    # Save training history plot
     try:
-        import tensorflow as tf
-        import numpy as np
-        import pandas as pd
         import matplotlib.pyplot as plt
-        print(f"✓ TensorFlow {tf.__version__} is installed")
-        print(f"✓ GPU Available: {len(tf.config.list_physical_devices('GPU')) > 0}")
-    except ImportError as e:
-        print(f"✗ Missing dependency: {e}")
-        print("Please install requirements: pip install -r requirements.txt")
-        return False
-    return True
-
-def check_data_structure():
-    """Check if data is properly structured"""
-    base_path = Path("trainingData")
-
-    required_files = [
-        "Training/training_labels.csv",
-        "Validation/validation_labels.csv",
-        "Testing/testing_labels.csv"
-    ]
-
-    missing_files = []
-    for file_path in required_files:
-        full_path = base_path / file_path
-        if not full_path.exists():
-            missing_files.append(str(full_path))
-
-    if missing_files:
-        print("✗ Missing required data files:")
-        for file in missing_files:
-            print(f"  - {file}")
-        return False
-
-    print("✓ All required data files found")
-    return True
-
-def train_model():
-    """Train the OCR model"""
-    print("Starting model training...")
-    print("=" * 50)
-
-    if not check_dependencies():
-        return False
-
-    if not check_data_structure():
-        return False
-
-    # Create models directory
-    os.makedirs("models", exist_ok=True)
-
-    # Run training
-    try:
-        result = subprocess.run([sys.executable, "train.py"],
-                              capture_output=False, text=True)
-        if result.returncode == 0:
-            print("\n" + "=" * 50)
-            print("✓ Training completed successfully!")
-            print("Check the 'models' directory for saved model files")
-            return True
-        else:
-            print("\n" + "=" * 50)
-            print("✗ Training failed!")
-            return False
+        plt.figure()
+        plt.plot(history.history["loss"], label="train_loss")
+        plt.plot(history.history["val_loss"], label="val_loss")
+        plt.legend()
+        plt.title("Training History")
+        plt.savefig("training_history.png")
+        plt.close()
     except Exception as e:
-        print(f"Error during training: {e}")
-        return False
+        print("Could not save training history plot:", e)
+    print("Training complete.")
 
-def evaluate_model():
-    """Evaluate the trained model"""
-    print("Starting model evaluation...")
-    print("=" * 50)
+def evaluate(config):
+    print("Starting evaluation...")
+    set_seed()
+    # Load char mappings
+    char_to_num, num_to_char = load_char_mappings("models/char_mappings.pkl")
+    vocab_size = len(char_to_num)
+    # Load model
+    model, _ = build_ocr_model(
+        img_height=config.IMG_HEIGHT,
+        img_width=config.IMG_WIDTH,
+        num_chars=vocab_size,
+        max_text_length=config.MAX_TEXT_LENGTH,
+        lstm_units=config.LSTM_UNITS,
+        dropout_rate=config.DROPOUT_RATE
+    )
+    model.load_weights("models/ocr_model_best.weights.h5")
+    # Data generators
+    _, val_gen, _, _ = get_data_generators(config, only_val=True)
+    # Evaluate on validation
+    from evaluate import evaluate_model
+    val_report, val_plots, val_pred_csv = evaluate_model(
+        model, val_gen, num_to_char, "validation"
+    )
+    print(f"Validation report saved to {val_report}")
+    # Evaluate on test
+    test_report, test_plots, test_pred_csv = evaluate_model(
+        model, None, num_to_char, "test"
+    )
+    print(f"Test report saved to {test_report}")
+    print("Evaluation complete.")
 
-    # Check if model exists
-    model_path = "models/ocr_model_prediction.h5"
-    if not os.path.exists(model_path):
-        print(f"✗ Model not found: {model_path}")
-        print("Please train the model first using: python run_ocr.py --train")
-        return False
-
-    # Run evaluation
-    try:
-        result = subprocess.run([sys.executable, "evaluate.py"],
-                              capture_output=False, text=True)
-        if result.returncode == 0:
-            print("\n" + "=" * 50)
-            print("✓ Evaluation completed successfully!")
-            print("Check the evaluation reports and plots generated")
-            return True
-        else:
-            print("\n" + "=" * 50)
-            print("✗ Evaluation failed!")
-            return False
-    except Exception as e:
-        print(f"Error during evaluation: {e}")
-        return False
-
-def predict_image(image_path, visualize=False):
-    """Predict text from a single image"""
-    print(f"Predicting text from: {image_path}")
-    print("=" * 50)
-
-    # Check if model exists
-    model_path = "models/ocr_model_prediction.h5"
-    if not os.path.exists(model_path):
-        print(f"✗ Model not found: {model_path}")
-        print("Please train the model first using: python run_ocr.py --train")
-        return False
-
-    # Check if image exists
-    if not os.path.exists(image_path):
-        print(f"✗ Image not found: {image_path}")
-        return False
-
-    # Run prediction
-    try:
-        cmd = [sys.executable, "predict.py", "--image", image_path]
-        if visualize:
-            cmd.append("--visualize")
-
-        result = subprocess.run(cmd, capture_output=False, text=True)
-        if result.returncode == 0:
-            print("\n" + "=" * 50)
-            print("✓ Prediction completed successfully!")
-            return True
-        else:
-            print("\n" + "=" * 50)
-            print("✗ Prediction failed!")
-            return False
-    except Exception as e:
-        print(f"Error during prediction: {e}")
-        return False
-
-def predict_folder(folder_path, output_file=None):
-    """Predict text from all images in a folder"""
-    print(f"Predicting text from folder: {folder_path}")
-    print("=" * 50)
-
-    # Check if model exists
-    model_path = "models/ocr_model_prediction.h5"
-    if not os.path.exists(model_path):
-        print(f"✗ Model not found: {model_path}")
-        print("Please train the model first using: python run_ocr.py --train")
-        return False
-
-    # Check if folder exists
-    if not os.path.exists(folder_path):
-        print(f"✗ Folder not found: {folder_path}")
-        return False
-
-    # Run prediction
-    try:
-        cmd = [sys.executable, "predict.py", "--folder", folder_path]
-        if output_file:
-            cmd.extend(["--output", output_file])
-
-        result = subprocess.run(cmd, capture_output=False, text=True)
-        if result.returncode == 0:
-            print("\n" + "=" * 50)
-            print("✓ Batch prediction completed successfully!")
-            if output_file:
-                print(f"Results saved to: {output_file}")
-            return True
-        else:
-            print("\n" + "=" * 50)
-            print("✗ Batch prediction failed!")
-            return False
-    except Exception as e:
-        print(f"Error during prediction: {e}")
-        return False
-
-def show_status():
-    """Show current status of the OCR system"""
-    print("OCR System Status")
-    print("=" * 50)
-
-    # Check dependencies
-    print("Dependencies:")
-    if check_dependencies():
-        print("✓ All dependencies installed")
+def predict_cli(config, args):
+    if args.image:
+        # Single image prediction
+        result = predict_medicine_name(args.image, visualize=args.visualize)
+        print(f"Medicine: {result['medicine_name']}")
+        print(f"Confidence: {result['confidence']:.2f}")
+    elif args.folder:
+        # Batch prediction
+        batch_predict(
+            folder=args.folder,
+            output_csv=args.output or "results.csv",
+            visualize=args.visualize
+        )
+        print(f"Batch prediction results saved to {args.output or 'results.csv'}")
     else:
-        print("✗ Missing dependencies")
-
-    print()
-
-    # Check data
-    print("Data:")
-    if check_data_structure():
-        print("✓ Data structure is correct")
-    else:
-        print("✗ Data structure issues found")
-
-    print()
-
-    # Check models
-    print("Models:")
-    model_files = [
-        "models/ocr_model_prediction.h5",
-        "models/char_mappings.pkl"
-    ]
-
-    all_models_exist = True
-    for model_file in model_files:
-        if os.path.exists(model_file):
-            print(f"✓ {model_file}")
-        else:
-            print(f"✗ {model_file}")
-            all_models_exist = False
-
-    if all_models_exist:
-        print("✓ All required model files found")
-    else:
-        print("✗ Some model files missing - run training first")
+        print("Please provide --image or --folder for prediction.")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="OCR Model Training and Testing Utility",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Train the model
-  python run_ocr.py --train
-
-  # Evaluate the model
-  python run_ocr.py --evaluate
-
-  # Predict single image
-  python run_ocr.py --predict image.png --visualize
-
-  # Predict all images in folder
-  python run_ocr.py --predict-folder images/ --output results.csv
-
-  # Check system status
-  python run_ocr.py --status
-        """
+        description="Medical Handwriting OCR System"
     )
-
-    parser.add_argument("--train", action="store_true",
-                       help="Train the OCR model")
-    parser.add_argument("--evaluate", action="store_true",
-                       help="Evaluate the trained model")
-    parser.add_argument("--predict", type=str, metavar="IMAGE_PATH",
-                       help="Predict text from a single image")
-    parser.add_argument("--predict-folder", type=str, metavar="FOLDER_PATH",
-                       help="Predict text from all images in folder")
-    parser.add_argument("--output", type=str, metavar="OUTPUT_FILE",
-                       help="Output file for batch predictions (CSV format)")
-    parser.add_argument("--visualize", action="store_true",
-                       help="Show visualization for single image prediction")
-    parser.add_argument("--status", action="store_true",
-                       help="Show system status")
-
+    parser.add_argument("--train", action="store_true", help="Train the OCR model")
+    parser.add_argument("--evaluate", action="store_true", help="Evaluate the OCR model")
+    parser.add_argument("--predict", action="store_true", help="Predict using the OCR model")
+    parser.add_argument("--image", type=str, help="Path to image for prediction")
+    parser.add_argument("--folder", type=str, help="Path to folder for batch prediction")
+    parser.add_argument("--output", type=str, help="Output CSV for batch prediction")
+    parser.add_argument("--visualize", action="store_true", help="Visualize predictions")
+    parser.add_argument("--config", type=str, default="OCRConfig", help="Config class to use")
     args = parser.parse_args()
 
-    # If no arguments provided, show help
-    if not any(vars(args).values()):
-        parser.print_help()
-        return
+    # Select config
+    config_module = __import__("config")
+    config_class = getattr(config_module, args.config, OCRConfig)
+    config = config_class()
 
-    # Execute requested actions
-    if args.status:
-        show_status()
+    # Ensure output dirs
+    os.makedirs("models", exist_ok=True)
+    os.makedirs("data", exist_ok=True)
 
     if args.train:
-        success = train_model()
-        if not success:
-            sys.exit(1)
-
-    if args.evaluate:
-        success = evaluate_model()
-        if not success:
-            sys.exit(1)
-
-    if args.predict:
-        success = predict_image(args.predict, args.visualize)
-        if not success:
-            sys.exit(1)
-
-    if args.predict_folder:
-        success = predict_folder(args.predict_folder, args.output)
-        if not success:
-            sys.exit(1)
+        train(config)
+    elif args.evaluate:
+        evaluate(config)
+    elif args.predict:
+        predict_cli(config, args)
+    else:
+        parser.print_help()
 
 if __name__ == "__main__":
     main()
