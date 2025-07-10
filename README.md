@@ -97,26 +97,56 @@ python3 run_ocr.py --train
 
 ### 2. Evaluating the Model
 
-To evaluate the trained model on test/validation data:
+The evaluation system provides comprehensive metrics and analysis for your OCR model. You can evaluate using either the main evaluation script or the simple runner.
+
+#### Using the Simple Evaluation Runner
 
 ```bash
-python3 run_ocr.py --evaluate
+# Quick evaluation with 100 samples
+python3 run_evaluation.py --quick
+
+# Full validation dataset evaluation
+python3 run_evaluation.py --dataset validation
+
+# Test dataset evaluation
+python3 run_evaluation.py --dataset test --output results
+
+# Evaluate specific number of samples
+python3 run_evaluation.py --dataset validation --samples 500
 ```
 
+#### Using the Main Evaluation Script
+
+```bash
+# Evaluate validation dataset
+python3 evaluate.py --dataset validation
+
+# Evaluate test dataset with specific number of samples
+python3 evaluate.py --dataset test --num_samples 1000
+
+# Custom model path
+python3 evaluate.py --dataset validation --model_path models/custom_model.keras
+```
+
+**Evaluation Metrics**:
+- **Character Accuracy**: Percentage of correctly predicted characters
+- **Word Accuracy**: Percentage of completely correct word predictions
+- **Edit Distance**: Average Levenshtein distance between predictions and ground truth
+- **BLEU Score**: Sequence-level similarity score
+- **CTC Loss**: Model's confidence in predictions
+- **Length Statistics**: Analysis of predicted vs. actual text lengths
+
 **Evaluation Features**:
-- Tests on both validation and test datasets
-- Calculates multiple metrics:
-  - Edit distance
-  - Character-level accuracy
-  - Word-level accuracy
-- Generates detailed reports and visualizations
-- Analyzes common prediction errors
+- **Comprehensive Metrics**: Multiple evaluation metrics for thorough analysis
+- **Visual Reports**: Automated generation of plots and charts
+- **Error Analysis**: Detailed breakdown of prediction errors
+- **Sample Inspection**: Display of sample predictions for manual review
+- **Export Options**: Results saved in multiple formats (TXT, PNG, CSV)
 
 **Evaluation Output**:
-- `validation_evaluation_report.txt` - Detailed validation results
-- `test_evaluation_report.txt` - Detailed test results
-- `*_evaluation_plots.png` - Metric distribution plots
-- `*_prediction_comparison.csv` - Detailed prediction comparisons
+- `{dataset}_evaluation_report_{timestamp}.txt` - Detailed evaluation report
+- `{dataset}_evaluation_plots_{timestamp}.png` - Visualization plots
+- `{dataset}_prediction_comparison_{timestamp}.csv` - Detailed prediction comparisons
 
 ### 3. Making Predictions
 
@@ -243,12 +273,63 @@ class OCRConfig:
 
 ## Model Metrics
 
-The system provides comprehensive evaluation metrics:
+The evaluation system provides comprehensive metrics to assess model performance:
 
-- **Edit Distance**: Levenshtein distance between predicted and actual text
+### Primary Metrics
+
 - **Character Accuracy**: Percentage of correctly predicted characters
-- **Word Accuracy**: Percentage of completely correct predictions
-- **Confidence Score**: Model confidence in predictions
+  - Calculated by comparing each character position
+  - Handles variable-length sequences with padding
+  - Range: 0.0 to 1.0 (higher is better)
+
+- **Word Accuracy**: Percentage of completely correct word predictions
+  - Exact match between predicted and ground truth text
+  - More stringent than character accuracy
+  - Range: 0.0 to 1.0 (higher is better)
+
+- **Edit Distance (Levenshtein Distance)**: Average character-level edit distance
+  - Measures minimum operations needed to transform prediction to ground truth
+  - Includes insertions, deletions, and substitutions
+  - Range: 0 to max_text_length (lower is better)
+
+- **BLEU Score**: Sequence-level similarity metric
+  - Adapted from machine translation evaluation
+  - Considers n-gram overlap between sequences
+  - Range: 0.0 to 1.0 (higher is better)
+
+- **CTC Loss**: Model's internal loss function value
+  - Measures model confidence in predictions
+  - Lower values indicate better model certainty
+  - Range: 0.0 to infinity (lower is better)
+
+### Additional Metrics
+
+- **Length Statistics**: Analysis of text length patterns
+  - Average predicted length vs. ground truth length
+  - Helps identify systematic length biases
+  - Useful for detecting over/under-segmentation
+
+- **Accuracy by Length**: Performance breakdown by text length
+  - Shows how accuracy varies with text complexity
+  - Helps identify model limitations
+  - Useful for targeted improvement
+
+### Evaluation Reports
+
+The evaluation system generates several types of reports:
+
+1. **Text Report**: Comprehensive metrics summary
+2. **Visual Plots**: Distribution charts and accuracy graphs
+3. **CSV Export**: Detailed prediction comparisons for further analysis
+4. **Sample Display**: Manual inspection of predictions vs. ground truth
+
+### Interpreting Results
+
+- **Character Accuracy > 0.90**: Good character-level recognition
+- **Word Accuracy > 0.70**: Acceptable word-level performance
+- **Edit Distance < 2.0**: Low error rate per word
+- **BLEU Score > 0.8**: High sequence similarity
+- **CTC Loss < 5.0**: Good model confidence
 
 ## Contributing
 

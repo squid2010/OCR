@@ -51,7 +51,7 @@ class OCRConfig:
     MODEL_DIR = "models"
     BEST_MODEL_PATH = f"{MODEL_DIR}/ocr_model_best.h5"
     FINAL_MODEL_PATH = f"{MODEL_DIR}/ocr_model_final.h5"
-    PREDICTION_MODEL_PATH = f"{MODEL_DIR}/ocr_model_prediction.h5"
+    PREDICTION_MODEL_PATH = f"{MODEL_DIR}/ocr_model_prediction.keras"
     CHAR_MAPPINGS_PATH = f"{MODEL_DIR}/char_mappings.pkl"
     TRAINING_HISTORY_PLOT = "training_history.png"
     DATA_DIR = "data"
@@ -66,9 +66,9 @@ class OCRConfig:
 
     # Mac M1 specific tweaks
     if platform.machine() == "arm64" and platform.system() == "Darwin":
-        # Apple Silicon: Use smaller batch, disable mixed precision, and avoid XLA by default
-        BATCH_SIZE = 2
-        USE_MIXED_PRECISION = False
+        # Apple Silicon: Use smaller batch, mixed precision, and avoid XLA by default
+        BATCH_SIZE = 8
+        USE_MIXED_PRECISION = True
         USE_XLA = False
 
 class LightweightConfig(OCRConfig):

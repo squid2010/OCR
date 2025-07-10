@@ -37,8 +37,10 @@ class OCRDataLoader:
         self.seed = seed
 
         self.df = pd.read_csv(csv_path)
-        self.image_paths = self.df['IMAGE'].astype(str).tolist()
-        self.labels = self.df['MEDICINE_NAME'].astype(str).tolist()
+        # Filter out samples with labels longer than max_text_length
+        filtered = self.df[self.df['MEDICINE_NAME'].astype(str).str.len() <= self.max_text_length]
+        self.image_paths = filtered['IMAGE'].astype(str).tolist()
+        self.labels = filtered['MEDICINE_NAME'].astype(str).tolist()
         self.indices = np.arange(len(self.image_paths))
         if self.shuffle:
             np.random.seed(self.seed)
@@ -117,6 +119,9 @@ class OCRDataLoader:
                     batch_labels.append(label)
                     input_lengths.append(self.img_width // 4)  # Downsampled by CNN
                     label_lengths.append(min(len(self.labels[idx]), self.max_text_length))
+                # Skip empty batches to avoid CTC errors
+                if len(batch_images) == 0:
+                    continue
                 batch_images = np.array(batch_images)
                 batch_labels = np.array(batch_labels)
                 input_lengths = np.array(input_lengths)

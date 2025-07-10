@@ -14,6 +14,10 @@ except Exception:
     # Fallback for older TF or non-mixed precision environments
     pass
 
+# NOTE: For successful weight loading, the model architecture (including all layer names, order, and parameters)
+# must exactly match the architecture used when the weights file was created.
+
+# Note: Removed decorator for compatibility with different TensorFlow versions
 class OCRModel(tf.keras.Model):
     def __init__(
         self,
@@ -35,7 +39,8 @@ class OCRModel(tf.keras.Model):
 
         # Feature extractor (CNN)
         self.cnn = models.Sequential([
-            layers.Conv2D(32, (3, 3), padding='same', activation='relu', input_shape=(img_height, img_width, 1)),
+            layers.InputLayer(input_shape=(img_height, img_width, 1)),
+            layers.Conv2D(32, (3, 3), padding='same', activation='relu'),
             layers.MaxPooling2D(pool_size=(2, 2)),
             layers.BatchNormalization(),
 
