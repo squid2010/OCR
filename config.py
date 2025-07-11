@@ -12,8 +12,8 @@ class OCRConfig:
     MAX_TEXT_LENGTH = 32
 
     # Training parameters
-    BATCH_SIZE = 8  # Lowered for Mac M1 and to avoid OOM
-    EPOCHS = 50
+    BATCH_SIZE = 1  # Lowered for Mac M1 and to avoid OOM
+    EPOCHS = 21
     LEARNING_RATE = 0.001
 
     # Model architecture
