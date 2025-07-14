@@ -75,7 +75,7 @@ class LightweightConfig(OCRConfig):
     # Smaller model for faster training/less memory
     LSTM_UNITS = 128
     CNN_FILTERS = [16, 32, 64, 64, 128]
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
     EPOCHS = 30
 
 class HighAccuracyConfig(OCRConfig):
@@ -83,7 +83,7 @@ class HighAccuracyConfig(OCRConfig):
     LSTM_UNITS = 384
     CNN_FILTERS = [64, 128, 256, 256, 512]
     BATCH_SIZE = 4
-    EPOCHS = 80
+    EPOCHS = 30
     DROPOUT_RATE = 0.3
 
 class FastTrainingConfig(OCRConfig):

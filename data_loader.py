@@ -126,25 +126,12 @@ class OCRDataLoader:
                 batch_labels = np.array(batch_labels)
                 input_lengths = np.array(input_lengths)
                 label_lengths = np.array(label_lengths)
-                # For CTC loss, return dict
-                yield (
-                    {
-                        "image": batch_images,
-                        "label": batch_labels,
-                        "input_length": input_lengths,
-                        "label_length": label_lengths,
-                    },
-                    batch_labels,
-                )
+                # For standard Keras fit: yield (images, labels)
+                yield (np.array(batch_images), np.array(batch_labels))
 
     def get_tf_dataset(self):
         output_signature = (
-            {
-                "image": tf.TensorSpec(shape=(None, self.img_height, self.img_width, 1), dtype=tf.float32),
-                "label": tf.TensorSpec(shape=(None, self.max_text_length), dtype=tf.int32),
-                "input_length": tf.TensorSpec(shape=(None,), dtype=tf.int32),
-                "label_length": tf.TensorSpec(shape=(None,), dtype=tf.int32),
-            },
+            tf.TensorSpec(shape=(None, self.img_height, self.img_width, 1), dtype=tf.float32),
             tf.TensorSpec(shape=(None, self.max_text_length), dtype=tf.int32),
         )
         ds = tf.data.Dataset.from_generator(

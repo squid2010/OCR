@@ -11,16 +11,44 @@ from collections import defaultdict
 import warnings
 warnings.filterwarnings('ignore')
 
+import psutil
+
 from config import OCRConfig
 from data_loader import get_data_generators, load_single_image, load_batch_images, OCRDataLoader, build_vocab_from_labels
-from ocr_model import build_ocr_model, decode_predictions, load_char_mappings, OCRModel
+from ocr_model import build_ocr_model, decode_predictions, load_char_mappings
 from predict import predict_medicine_name, batch_predict
+from evaluate import evaluate_model
 
 def set_seed(seed=42):
     import random
     random.seed(seed)
     np.random.seed(seed)
     tf.random.set_seed(seed)
+
+class MemoryUsageCallback(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        process = psutil.Process(os.getpid())
+        mem_bytes = process.memory_info().rss
+        mem_mb = mem_bytes / (1024 ** 2)
+        print(f"\n[Memory] Epoch {epoch+1}: {mem_mb:.2f} MB used by process")
+
+import gc
+class GCGarbageCollector(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        gc.collect()
+        print(f"[GC] Garbage collection forced at end of epoch {epoch+1}")
+
+def ctc_loss_fn(y_true, y_pred):
+    # Debug: print type and shape of y_true
+    print("DEBUG ctc_loss_fn: y_true type:", type(y_true))
+    print("DEBUG ctc_loss_fn: y_true shape:", getattr(y_true, "shape", None))
+    # y_true: (batch, max_text_length)
+    # y_pred: (batch, time_steps, num_classes)
+    input_length = tf.fill([tf.shape(y_pred)[0]], tf.shape(y_pred)[1])
+    input_length = tf.expand_dims(input_length, axis=1)  # shape (batch_size, 1)
+    label_length = tf.reduce_sum(tf.cast(tf.not_equal(y_true, -1), tf.int32), axis=1)
+    label_length = tf.expand_dims(label_length, axis=1)  # shape (batch_size, 1)
+    return tf.keras.backend.ctc_batch_cost(y_true, y_pred, input_length, label_length)
 
 def train(config):
     print("Starting training...")
@@ -67,8 +95,8 @@ def train(config):
     steps_per_epoch = len(train_loader)
     validation_steps = len(val_loader)
 
-    # Model
-    model, _ = build_ocr_model(
+    # Build functional model (no Lambda layer)
+    model, prediction_model = build_ocr_model(
         img_height=config.IMG_HEIGHT,
         img_width=config.IMG_WIDTH,
         num_chars=vocab_size,
@@ -81,10 +109,10 @@ def train(config):
     # Callbacks
     callbacks = [
         tf.keras.callbacks.ModelCheckpoint(
-            filepath="models/ocr_model_best.weights.h5",
+            filepath="models/ocr_model_best.keras",
             monitor="val_loss",
             save_best_only=True,
-            save_weights_only=True,
+            save_weights_only=False,
             verbose=1
         ),
         tf.keras.callbacks.EarlyStopping(
@@ -98,16 +126,18 @@ def train(config):
             patience=5,
             min_lr=1e-6,
             verbose=1
-        )
+        ),
+        MemoryUsageCallback(),  # Print memory usage after each epoch
+        GCGarbageCollector(),   # Force garbage collection after each epoch
     ]
 
-    # Mixed precision
-    if getattr(config, "USE_MIXED_PRECISION", True):
-        tf.keras.mixed_precision.set_global_policy("mixed_float16")
+    # Mixed precision - DISABLED for memory safety
+    tf.keras.mixed_precision.set_global_policy("float32")
 
-    # Compile
+    # Compile with custom CTC loss
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=config.LEARNING_RATE)
+        optimizer=tf.keras.optimizers.Adam(learning_rate=config.LEARNING_RATE),
+        loss=ctc_loss_fn
     )
 
     # Fit
@@ -121,14 +151,16 @@ def train(config):
         validation_freq=5
     )
 
-    # Save final weights
-    model.save_weights("models/ocr_model_final.weights.h5")
     # Save model for inference
-    model.save("models/ocr_model_prediction.keras")
+    print("Saving model for inference to models/ocr_model_final.keras...")
+    model.save("models/ocr_model_final.keras")
+    print("Model for inference saved successfully.")
     # Save char mappings
     import pickle
+    print("Saving character mappings to models/char_mappings.pkl...")
     with open("models/char_mappings.pkl", "wb") as f:
         pickle.dump({"char_to_num": char_to_num, "num_to_char": num_to_char}, f)
+    print("Character mappings saved successfully.")
     # Save training history plot
     try:
         import matplotlib.pyplot as plt
@@ -142,6 +174,12 @@ def train(config):
     except Exception as e:
         print("Could not save training history plot:", e)
     print("Training complete.")
+
+    # Explicitly clear session and force GC
+    tf.keras.backend.clear_session()
+    del model, prediction_model, train_gen, val_gen, train_loader, val_loader
+    import gc
+    gc.collect()
 
 class OCRModelEvaluator:
     """
@@ -226,7 +264,7 @@ class OCRModelEvaluator:
                     _ = self.prediction_model(dummy_input)
 
                     # Load weights
-                    self.prediction_model.load_weights(weights_path)
+                    self.prediction_model = tf.keras.models.load_model(path, compile=False)
                     print(f"✓ Successfully loaded weights from {weights_path}")
                     return
                 except Exception as e:
@@ -382,7 +420,6 @@ class OCRModelEvaluator:
 
         # Character accuracy
         char_accuracy = self.calculate_character_accuracy(predictions, ground_truth)
-
         # Word accuracy
         word_accuracy = self.calculate_word_accuracy(predictions, ground_truth)
 
@@ -805,12 +842,8 @@ def main():
     if args.train:
         train(config)
     elif args.evaluate:
-        evaluate(config,
-                dataset=args.dataset,
-                num_samples=args.samples,
-                output_dir=args.output_dir,
-                quick=args.quick,
-                demo=args.demo)
+        # --- Updated Evaluation Section --
+        evaluate_model(num_samples=args.samples)
     elif args.predict:
         predict_cli(config, args)
     else:

@@ -5,6 +5,7 @@ Prediction module for Medical Handwriting OCR System.
 Provides:
 - predict_medicine_name: Python API for single image prediction
 - CLI batch/single prediction logic (used by run_ocr.py)
+- Snap predictions to closest valid medicine name using edit distance
 """
 
 import os
@@ -14,10 +15,11 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras import backend as K
 from PIL import Image
 import pickle
+import pandas as pd
 
 # --- CONFIGURATION ---
 
-MODEL_PATH = os.path.join("models", "ocr_model_prediction.h5")
+MODEL_PATH = os.path.join("models", "ocr_model_prediction.keras")
 CHAR_MAP_PATH = os.path.join("models", "char_mappings.pkl")
 
 IMG_HEIGHT = 128
@@ -58,6 +60,77 @@ def decode_prediction(pred, num_to_char):
     text = ''.join([num_to_char.get(i, '') for i in out if i != -1])
     return text
 
+def load_valid_medicine_names(csv_paths):
+    """Load all unique medicine names from provided CSV files."""
+    names = set()
+    for csv_path in csv_paths:
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            names.update(df['MEDICINE_NAME'].astype(str).unique())
+    return list(names)
+
+def find_closest_name(prediction, valid_names, max_distance=2):
+    """Return the closest valid medicine name if within max_distance, else original prediction."""
+    try:
+        import Levenshtein
+        distance_func = Levenshtein.distance
+    except ImportError:
+        # fallback to pure python implementation
+        def distance_func(s1, s2):
+            if len(s1) < len(s2):
+                return distance_func(s2, s1)
+            if len(s2) == 0:
+                return len(s1)
+            previous_row = list(range(len(s2) + 1))
+            for i, c1 in enumerate(s1):
+                current_row = [i + 1]
+                for j, c2 in enumerate(s2):
+                    insertions = previous_row[j + 1] + 1
+                    deletions = current_row[j] + 1
+                    substitutions = previous_row
+
+def load_valid_medicine_names(csv_paths):
+    """Load all unique medicine names from provided CSV files."""
+    names = set()
+    for csv_path in csv_paths:
+        if os.path.exists(csv_path):
+            df = pd.read_csv(csv_path)
+            names.update(df['MEDICINE_NAME'].astype(str).unique())
+    return list(names)
+
+def find_closest_name(prediction, valid_names, max_distance=2):
+    """Return the closest valid medicine name if within max_distance, else original prediction."""
+    try:
+        import Levenshtein
+        distance_func = Levenshtein.distance
+    except ImportError:
+        # fallback to pure python implementation
+        def distance_func(s1, s2):
+            if len(s1) < len(s2):
+                return distance_func(s2, s1)
+            if len(s2) == 0:
+                return len(s1)
+            previous_row = list(range(len(s2) + 1))
+            for i, c1 in enumerate(s1):
+                current_row = [i + 1]
+                for j, c2 in enumerate(s2):
+                    insertions = previous_row[j + 1] + 1
+                    deletions = current_row[j] + 1
+                    substitutions = previous_row[j] + (c1 != c2)
+                    current_row.append(min(insertions, deletions, substitutions))
+                previous_row = current_row
+            return previous_row[-1]
+        distance_func = distance_func
+
+    closest = prediction
+    min_dist = max_distance + 1
+    for name in valid_names:
+        dist = distance_func(prediction, name)
+        if dist < min_dist:
+            min_dist = dist
+            closest = name
+    return closest if min_dist <= max_distance else prediction
+
 def get_confidence(pred):
     """
     Returns a confidence score for the prediction.
@@ -67,77 +140,143 @@ def get_confidence(pred):
 
 # --- MAIN PREDICTION API ---
 
-def predict_medicine_name(image_path, model_path=MODEL_PATH, char_map_path=CHAR_MAP_PATH):
+def predict_medicine_name(
+    image,
+    model_path=MODEL_PATH,
+    char_map_path=CHAR_MAP_PATH,
+    valid_names=None,
+    max_distance=2,
+    from_array=False
+):
     """
-    Predicts the medicine name from a single image.
+    Predicts the medicine name from a single image (file path or numpy array).
+    Args:
+        image: str (path) or np.ndarray (H, W, 1) or (H, W)
+        from_array: If True, treat image as numpy array
     Returns:
         {
-            "medicine_name": str,
-            "confidence": float
+            "medicine_name": snapped_name,
+            "confidence": confidence,
+            "raw_prediction": medicine_name
         }
     """
-    # Load model and mappings (cache if used in batch)
     model = load_model(model_path, compile=False)
     char_to_num, num_to_char = load_char_mappings(char_map_path)
 
-    img = preprocess_image(image_path)
-    img = np.expand_dims(img, axis=0)  # (1, H, W, 1)
+    if from_array:
+        img = image
+        if img.ndim == 2:
+            img = np.expand_dims(img, axis=-1)
+        img = img.astype(np.float32)
+        if img.max() > 1.0:
+            img = img / 255.0
+        img = np.expand_dims(img, axis=0)
+    else:
+        img = preprocess_image(image)
+        img = np.expand_dims(img, axis=0)
 
     preds = model.predict(img)
-    pred = preds[0]  # (timesteps, num_classes)
+    pred = preds[0]
 
-    # Decode prediction
     input_len = np.ones((1,)) * pred.shape[0]
     decoded, _ = K.ctc_decode(np.expand_dims(pred, axis=0), input_length=input_len, greedy=True)
     out = K.get_value(decoded[0])[0]
     medicine_name = ''.join([num_to_char.get(i, '') for i in out if i != -1])
 
     confidence = get_confidence(pred)
+
+    # Snap to closest valid name if needed
+    if valid_names is not None:
+        snapped_name = find_closest_name(medicine_name, valid_names, max_distance)
+    else:
+        snapped_name = medicine_name
+
     return {
-        "medicine_name": medicine_name,
-        "confidence": confidence
+        "medicine_name": snapped_name,
+        "confidence": confidence,
+        "raw_prediction": medicine_name
     }
 
 # --- BATCH PREDICTION ---
 
-def batch_predict(folder_path, output_csv="results.csv", model_path=MODEL_PATH, char_map_path=CHAR_MAP_PATH):
+def batch_predict(
+    images,
+    output_csv="results.csv",
+    model_path=MODEL_PATH,
+    char_map_path=CHAR_MAP_PATH,
+    valid_names=None,
+    max_distance=2,
+    image_files=None,
+    from_array=False
+):
     """
-    Predicts medicine names for all images in a folder.
+    Predicts medicine names for all images in a folder or numpy array batch.
     Writes results to output_csv.
+    Args:
+        images: folder path (str) or numpy array (N, H, W, 1)
+        image_files: list of filenames (optional, for numpy array batch)
+        from_array: If True, treat images as numpy array batch
     """
     import csv
 
     model = load_model(model_path, compile=False)
     char_to_num, num_to_char = load_char_mappings(char_map_path)
 
-    image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    image_files.sort()
     results = []
 
-    for fname in image_files:
-        img_path = os.path.join(folder_path, fname)
-        img = preprocess_image(img_path)
-        img = np.expand_dims(img, axis=0)
-        preds = model.predict(img)
-        pred = preds[0]
-        input_len = np.ones((1,)) * pred.shape[0]
-        decoded, _ = K.ctc_decode(np.expand_dims(pred, axis=0), input_length=input_len, greedy=True)
-        out = K.get_value(decoded[0])[0]
-        medicine_name = ''.join([num_to_char.get(i, '') for i in out if i != -1])
-        confidence = get_confidence(pred)
-        results.append({
-            "IMAGE": fname,
-            "MEDICINE_NAME": medicine_name,
-            "CONFIDENCE": confidence
-        })
-
-    # Write to CSV
-    with open(output_csv, "w", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=["IMAGE", "MEDICINE_NAME", "CONFIDENCE"])
-        writer.writeheader()
-        for row in results:
-            writer.writerow(row)
-    print(f"Batch prediction complete. Results saved to {output_csv}")
+    if from_array:
+        # images: numpy array (N, H, W, 1)
+        N = images.shape[0]
+        for i in range(N):
+            img = images[i]
+            if img.ndim == 2:
+                img = np.expand_dims(img, axis=-1)
+            img = img.astype(np.float32)
+            if img.max() > 1.0:
+                img = img / 255.0
+            img_batch = np.expand_dims(img, axis=0)
+            preds = model.predict(img_batch)
+            pred = preds[0]
+            input_len = np.ones((1,)) * pred.shape[0]
+            decoded, _ = K.ctc_decode(np.expand_dims(pred, axis=0), input_length=input_len, greedy=True)
+            out = K.get_value(decoded[0])[0]
+            medicine_name = ''.join([num_to_char.get(j, '') for j in out if j != -1])
+            confidence = get_confidence(pred)
+            if valid_names is not None:
+                snapped_name = find_closest_name(medicine_name, valid_names, max_distance)
+            else:
+                snapped_name = medicine_name
+            fname = image_files[i] if image_files is not None else f"img_{i}.png"
+            results.append({
+                "IMAGE": fname,
+                "MEDICINE_NAME": snapped_name,
+                "CONFIDENCE": confidence,
+                "RAW_PREDICTION": medicine_name
+            })
+    else:
+        image_files = [f for f in os.listdir(images) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        image_files.sort()
+        for fname in image_files:
+            img_path = os.path.join(images, fname)
+            img = preprocess_image(img_path)
+            img = np.expand_dims(img, axis=0)
+            preds = model.predict(img)
+            pred = preds[0]
+            input_len = np.ones((1,)) * pred.shape[0]
+            decoded, _ = K.ctc_decode(np.expand_dims(pred, axis=0), input_length=input_len, greedy=True)
+            out = K.get_value(decoded[0])[0]
+            medicine_name = ''.join([num_to_char.get(i, '') for i in out if i != -1])
+            confidence = get_confidence(pred)
+            if valid_names is not None:
+                snapped_name = find_closest_name(medicine_name, valid_names, max_distance)
+            else:
+                snapped_name = medicine_name
+            results.append({
+                "IMAGE": fname,
+                "MEDICINE_NAME": snapped_name,
+                "CONFIDENCE": confidence,
+                "RAW_PREDICTION": medicine_name
+            })
 
 # --- CLI ENTRY POINT (for run_ocr.py) ---
 
@@ -149,21 +288,45 @@ if __name__ == "__main__":
     parser.add_argument("--folder", type=str, help="Path to folder for batch prediction")
     parser.add_argument("--output", type=str, default="results.csv", help="Output CSV for batch prediction")
     parser.add_argument("--visualize", action="store_true", help="Visualize prediction (single image only)")
+    parser.add_argument("--np-image", action="store_true", help="Treat --image as numpy array file (.npy)")
+    parser.add_argument("--np-batch", action="store_true", help="Treat --folder as numpy array batch file (.npy)")
 
     args = parser.parse_args()
 
+    # Load valid medicine names for snapping
+    valid_names = load_valid_medicine_names([
+        "trainingData/Training/training_labels.csv",
+        "trainingData/Validation/validation_labels.csv",
+        "trainingData/Testing/testing_labels.csv"
+    ])
+
     if args.image:
-        result = predict_medicine_name(args.image)
+        if args.np_image:
+            import numpy as np
+            img_array = np.load(args.image)
+            result = predict_medicine_name(img_array, valid_names=valid_names, from_array=True)
+        else:
+            result = predict_medicine_name(args.image, valid_names=valid_names)
         print(f"Predicted Medicine Name: {result['medicine_name']}")
         print(f"Confidence: {result['confidence']:.4f}")
+        print(f"Raw Prediction: {result['raw_prediction']}")
         if args.visualize:
             import matplotlib.pyplot as plt
-            img = Image.open(args.image)
-            plt.imshow(img, cmap="gray")
+            if args.np_image:
+                img = img_array.squeeze()
+                plt.imshow(img, cmap="gray")
+            else:
+                img = Image.open(args.image)
+                plt.imshow(img, cmap="gray")
             plt.title(f"Prediction: {result['medicine_name']} (Conf: {result['confidence']:.2f})")
             plt.axis("off")
             plt.show()
     elif args.folder:
-        batch_predict(args.folder, args.output)
+        if args.np_batch:
+            import numpy as np
+            images = np.load(args.folder)
+            batch_predict(images, args.output, valid_names=valid_names, from_array=True)
+        else:
+            batch_predict(args.folder, args.output, valid_names=valid_names)
     else:
         print("Please provide --image or --folder argument for prediction.")
