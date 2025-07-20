@@ -226,22 +226,17 @@ def batch_predict(
 
     if from_array:
         # images: numpy array (N, H, W, 1)
-        N = images.shape[0]
-        for i in range(N):
-            img = images[i]
-            if img.ndim == 2:
-                img = np.expand_dims(img, axis=-1)
-            img = img.astype(np.float32)
-            if img.max() > 1.0:
-                img = img / 255.0
-            img_batch = np.expand_dims(img, axis=0)
-            preds = model.predict(img_batch)
-            pred = preds[0]
-            input_len = np.ones((1,)) * pred.shape[0]
-            decoded, _ = K.ctc_decode(np.expand_dims(pred, axis=0), input_length=input_len, greedy=True)
-            out = K.get_value(decoded[0])[0]
-            medicine_name = ''.join([num_to_char.get(j, '') for j in out if j != -1])
-            confidence = get_confidence(pred)
+        imgs_np = images.astype(np.float32)
+        if imgs_np.max() > 1.0:
+            imgs_np = imgs_np / 255.0
+        N = imgs_np.shape[0]
+        preds = model.predict(imgs_np)
+        input_lens = np.ones((N,)) * preds.shape[1]
+        decoded, _ = K.ctc_decode(preds, input_length=input_lens, greedy=True)
+        decoded_indices = K.get_value(decoded[0])
+        for i, seq in enumerate(decoded_indices):
+            medicine_name = ''.join([num_to_char.get(idx, '') for idx in seq if idx != -1])
+            confidence = get_confidence(preds[i])
             if valid_names is not None:
                 snapped_name = find_closest_name(medicine_name, valid_names, max_distance)
             else:
@@ -254,29 +249,38 @@ def batch_predict(
                 "RAW_PREDICTION": medicine_name
             })
     else:
-        image_files = [f for f in os.listdir(images) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        image_files.sort()
-        for fname in image_files:
-            img_path = os.path.join(images, fname)
-            img = preprocess_image(img_path)
-            img = np.expand_dims(img, axis=0)
-            preds = model.predict(img)
-            pred = preds[0]
-            input_len = np.ones((1,)) * pred.shape[0]
-            decoded, _ = K.ctc_decode(np.expand_dims(pred, axis=0), input_length=input_len, greedy=True)
-            out = K.get_value(decoded[0])[0]
-            medicine_name = ''.join([num_to_char.get(i, '') for i in out if i != -1])
-            confidence = get_confidence(pred)
+        # images: folder path (str)
+        # Load all images in one step
+        from data_loader import load_batch_images
+        from config import OCRConfig
+        imgs_np, image_files = load_batch_images(images, OCRConfig)
+        N = imgs_np.shape[0]
+        preds = model.predict(imgs_np)
+        input_lens = np.ones((N,)) * preds.shape[1]
+        decoded, _ = K.ctc_decode(preds, input_length=input_lens, greedy=True)
+        decoded_indices = K.get_value(decoded[0])
+        for i, seq in enumerate(decoded_indices):
+            medicine_name = ''.join([num_to_char.get(idx, '') for idx in seq if idx != -1])
+            confidence = get_confidence(preds[i])
             if valid_names is not None:
                 snapped_name = find_closest_name(medicine_name, valid_names, max_distance)
             else:
                 snapped_name = medicine_name
+            fname = image_files[i] if image_files is not None else f"img_{i}.png"
             results.append({
                 "IMAGE": fname,
                 "MEDICINE_NAME": snapped_name,
                 "CONFIDENCE": confidence,
                 "RAW_PREDICTION": medicine_name
             })
+
+    # Write results to CSV
+    with open(output_csv, "w", newline="") as csvfile:
+        fieldnames = ["IMAGE", "MEDICINE_NAME", "CONFIDENCE", "RAW_PREDICTION"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in results:
+            writer.writerow(row)
 
 # --- CLI ENTRY POINT (for run_ocr.py) ---
 

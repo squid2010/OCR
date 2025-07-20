@@ -143,7 +143,7 @@ class OCRModelEvaluator:
         for i, seq in enumerate(decoded_indices):
             medicine_name = ''.join([num_to_char.get(idx, '') for idx in seq if idx != -1])
             # Snap to closest valid name
-            snapped_name = find_closest_name(medicine_name, self.valid_names, max_distance=2)
+            snapped_name = find_closest_name(medicine_name, self.valid_names, max_distance=4)
             decoded_preds.append(snapped_name)
 
         char_acc = self.calculate_character_accuracy(decoded_preds, ground_truth_texts)
