@@ -1,29 +1,55 @@
 import os
-import cv2
-import pytesseract
+import pandas as pd
+import numpy as np
+import shutil
 
+# Paths
 IMG_DIR = "trainingData/hsf_data/hsf_handwritten_boxes"
-# Use a unique phrase from the NIST consent paragraph for detection
-UNIQUE_PHRASE = "The National Institute of Standards and Technology (NIST) will include"
+CSV_PATH = "trainingData/hsf_data/hsf_labels.csv"
 
-def is_nist_consent_image(image_path):
-    img = cv2.imread(image_path)
-    if img is None:
-        return False
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    text = pytesseract.image_to_string(gray, config="--psm 6")
-    return UNIQUE_PHRASE in text
+splits = {
+    "Training": 0.6,
+    "Testing": 0.2,
+    "Validation": 0.2,
+}
+
+out_dirs = {
+    "Training": "trainingData/Training/training_words",
+    "Testing": "trainingData/Testing/testing_words",
+    "Validation": "trainingData/Validation/validation_words",
+}
+
+out_csvs = {
+    "Training": "trainingData/Training/training_labels.csv",
+    "Testing": "trainingData/Testing/testing_labels.csv",
+    "Validation": "trainingData/Validation/validation_labels.csv",
+}
 
 def main():
-    deleted = 0
-    for fname in os.listdir(IMG_DIR):
-        if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
-            fpath = os.path.join(IMG_DIR, fname)
-            if is_nist_consent_image(fpath):
-                os.remove(fpath)
-                print(f"Deleted: {fname}")
-                deleted += 1
-    print(f"Deleted {deleted} NIST consent images.")
+    df = pd.read_csv(CSV_PATH)
+    # Shuffle the dataframe
+    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+    n = len(df)
+    n_train = int(splits["Training"] * n)
+    n_test = int(splits["Testing"] * n)
+    n_val = n - n_train - n_test
+
+    split_indices = {
+        "Training": (0, n_train),
+        "Testing": (n_train, n_train + n_test),
+        "Validation": (n_train + n_test, n),
+    }
+
+    for split, (start, end) in split_indices.items():
+        split_df = df.iloc[start:end].copy()
+        os.makedirs(out_dirs[split], exist_ok=True)
+        for img_name in split_df["IMAGE"]:
+            src = os.path.join(IMG_DIR, img_name)
+            dst = os.path.join(out_dirs[split], img_name)
+            if os.path.exists(src):
+                shutil.copy2(src, dst)
+        split_df.to_csv(out_csvs[split], index=False)
+        print(f"{split}: {len(split_df)} samples, images copied to {out_dirs[split]}, labels to {out_csvs[split]}")
 
 if __name__ == "__main__":
     main()
