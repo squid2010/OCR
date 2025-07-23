@@ -19,7 +19,7 @@ import pandas as pd
 
 # --- CONFIGURATION ---
 
-MODEL_PATH = os.path.join("models", "ocr_model_prediction.keras")
+MODEL_PATH = os.path.join("models", "ocr_model_final.keras")
 CHAR_MAP_PATH = os.path.join("models", "char_mappings.pkl")
 
 IMG_HEIGHT = 128

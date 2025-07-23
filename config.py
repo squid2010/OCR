@@ -51,7 +51,7 @@ class OCRConfig:
     MODEL_DIR = "models"
     BEST_MODEL_PATH = f"{MODEL_DIR}/ocr_model_best.h5"
     FINAL_MODEL_PATH = f"{MODEL_DIR}/ocr_model_final.h5"
-    PREDICTION_MODEL_PATH = f"{MODEL_DIR}/ocr_model_prediction.keras"
+    PREDICTION_MODEL_PATH = f"{MODEL_DIR}/ocr_model_final.keras"
     CHAR_MAPPINGS_PATH = f"{MODEL_DIR}/char_mappings.pkl"
     TRAINING_HISTORY_PLOT = "training_history.png"
     DATA_DIR = "data"
@@ -82,8 +82,8 @@ class HighAccuracyConfig(OCRConfig):
     # Larger model for higher accuracy
     LSTM_UNITS = 384
     CNN_FILTERS = [64, 128, 256, 256, 512]
-    BATCH_SIZE = 4
-    EPOCHS = 30
+    BATCH_SIZE = 32
+    EPOCHS = 100
     DROPOUT_RATE = 0.3
 
 class FastTrainingConfig(OCRConfig):

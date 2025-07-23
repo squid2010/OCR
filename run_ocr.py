@@ -148,7 +148,7 @@ def train(config):
         callbacks=callbacks,
         steps_per_epoch=steps_per_epoch,
         validation_steps=validation_steps,
-        validation_freq=5
+        validation_freq=1
     )
 
     # Save model for inference
@@ -816,7 +816,7 @@ def main():
     parser.add_argument("--config", type=str, default="OCRConfig", help="Config class to use")
 
     # Evaluation-specific arguments
-    parser.add_argument("--dataset", type=str, default="validation",
+    parser.add_argument("--dataset", type=str, default="test",
                        choices=["validation", "test"], help="Dataset to evaluate")
     parser.add_argument("--samples", type=int, default=None,
                        help="Number of samples to evaluate (default: all)")
@@ -842,7 +842,9 @@ def main():
         train(config)
     elif args.evaluate:
         # --- Updated Evaluation Section --
-        evaluate_model(num_samples=args.samples)
+        # Always use the testing dataset for evaluation
+        from evaluate import evaluate_model
+        evaluate_model(num_samples=None)
     elif args.predict:
         predict_cli(config, args)
     else:

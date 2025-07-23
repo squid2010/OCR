@@ -25,7 +25,7 @@ except ImportError:
 
 from ocr_model import build_ocr_model, decode_predictions, load_char_mappings
 from data_loader import get_data_generators
-from predict import predict_medicine_name, load_valid_medicine_names
+from predict import predict_medicine_name
 
 class OCRModelEvaluator:
     def __init__(self, config=None):
@@ -42,13 +42,7 @@ class OCRModelEvaluator:
         self.char_to_num, self.num_to_char = load_char_mappings(mappings_path)
         print(f"Loaded character mappings from {mappings_path} (vocab size: {len(self.char_to_num)})")
 
-        # Load valid medicine names for snapping
-        self.valid_names = load_valid_medicine_names([
-            "trainingData/Training/training_labels.csv",
-            "trainingData/Validation/validation_labels.csv",
-            "trainingData/Testing/testing_labels.csv"
-        ])
-        print(f"Loaded {len(self.valid_names)} valid medicine names for snapping.")
+        # No longer loading valid medicine names for snapping
 
     def calculate_character_accuracy(self, predictions, ground_truth):
         total_chars = 0
@@ -99,39 +93,74 @@ class OCRModelEvaluator:
             scores.append(score)
         return np.mean(scores)
 
-    def run(self, num_samples=100):
+    def run(self, num_samples=None):
         import numpy as np
-        print("Loading validation dataset...")
-        _, val_gen, self.char_to_num, self.num_to_char = get_data_generators(config=self.config, only_val=True)
-        batches_to_take = int(np.ceil(num_samples / (getattr(self.config, 'BATCH_SIZE', 8))))
-        val_batches = val_gen.take(batches_to_take)
-
-        all_images = []
-        all_labels = []
-        for batch_images, batch_labels in val_batches:
-            all_images.append(batch_images)
-            all_labels.append(batch_labels)
-
-        images = tf.concat(all_images, axis=0)[:num_samples]
-        label_indices = tf.concat(all_labels, axis=0)[:num_samples]
-
-        ground_truth_texts = []
-        for label_seq in label_indices:
-            label_str = "".join(
-                self.num_to_char.get(i, "") for i in label_seq.numpy() if i >= 0
-            )
-            ground_truth_texts.append(label_str)
+        print("Loading testing dataset...")
+        import pandas as pd
+        from PIL import Image
+        test_csv = "trainingData/Testing/testing_labels.csv"
+        test_img_dir = "trainingData/Testing/testing_words"
+        df = pd.read_csv(test_csv)
+        image_paths = df["IMAGE"].astype(str).tolist()
+        # Use MEDICINE_NAME unless it's BOTTOM_BOX, then use GENERIC_NAME
+        def get_label_for_row(row):
+            if "MEDICINE_NAME" in row and str(row["MEDICINE_NAME"]) == "BOTTOM_BOX":
+                return str(row.get("GENERIC_NAME", ""))
+            else:
+                return str(row.get("MEDICINE_NAME", ""))
+        labels = [get_label_for_row(row) for _, row in df.iterrows()]
+        # Build vocab from all labels
+        chars = set()
+        for label in labels:
+            chars.update(label)
+        vocab = ['UNK'] + sorted(list(chars))
+        char_to_num = {c: i for i, c in enumerate(vocab)}
+        num_to_char = {i: c for i, c in enumerate(vocab)}
+        self.char_to_num = char_to_num
+        self.num_to_char = num_to_char
+        # Preprocess all images
+        images = []
+        for img_path in image_paths:
+            try:
+                img = Image.open(os.path.join(test_img_dir, img_path)).convert("L")
+                img = np.array(img)
+            except Exception:
+                img = np.ones((128, 384), dtype=np.uint8) * 255
+            # Resize and pad
+            h, w = img.shape
+            img_height, img_width = 128, 384
+            scale = min(img_width / w, img_height / h)
+            nw, nh = int(w * scale), int(h * scale)
+            from PIL import Image as PILImage
+            img_resized = PILImage.fromarray(img).resize((nw, nh), resample=PILImage.BILINEAR)
+            img_resized = np.array(img_resized)
+            canvas = np.ones((img_height, img_width), dtype=np.uint8) * 255
+            x_offset = (img_width - nw) // 2
+            y_offset = (img_height - nh) // 2
+            canvas[y_offset:y_offset+nh, x_offset:x_offset+nw] = img_resized
+            img = canvas.astype(np.float32) / 255.0
+            img = np.expand_dims(img, axis=-1)
+            images.append(img)
+        images = np.stack(images)
+        # Encode all labels
+        def encode_label(label, max_text_length=32):
+            label = label[:max_text_length]
+            label_encoded = [char_to_num.get(c, char_to_num['UNK']) for c in label]
+            label_encoded += [-1] * (max_text_length - len(label_encoded))
+            return np.array(label_encoded, dtype=np.int32)
+        label_indices = np.stack([encode_label(label) for label in labels])
+        ground_truth_texts = labels
 
         # Use predict.py for predictions (with snapping, numpy array API) - batch all at once
         import numpy as np
         imgs_np = images.numpy() if hasattr(images, 'numpy') else images
 
         # Load model and mappings once
-        from predict import load_char_mappings, find_closest_name, get_confidence
+        from predict import load_char_mappings
         from tensorflow.keras.models import load_model
         import tensorflow.keras.backend as K
 
-        model = load_model("models/ocr_model_prediction.keras", compile=False)
+        model = load_model("models/ocr_model_final.keras", compile=False)
         char_to_num, num_to_char = load_char_mappings("models/char_mappings.pkl")
 
         # Predict all at once
@@ -142,9 +171,7 @@ class OCRModelEvaluator:
         decoded_preds = []
         for i, seq in enumerate(decoded_indices):
             medicine_name = ''.join([num_to_char.get(idx, '') for idx in seq if idx != -1])
-            # Snap to closest valid name
-            snapped_name = find_closest_name(medicine_name, self.valid_names, max_distance=4)
-            decoded_preds.append(snapped_name)
+            decoded_preds.append(medicine_name)
 
         char_acc = self.calculate_character_accuracy(decoded_preds, ground_truth_texts)
         word_acc = self.calculate_word_accuracy(decoded_preds, ground_truth_texts)
@@ -201,13 +228,13 @@ class OCRModelEvaluator:
             "bleu_score": bleu_score
         }
 
-def evaluate_model(num_samples=100):
+def evaluate_model(num_samples=None):
     evaluator = OCRModelEvaluator()
     evaluator.load_model_and_mappings()
     return evaluator.run(num_samples=num_samples)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate OCR model performance.")
-    parser.add_argument("--num_samples", type=int, default=100, help="Number of samples to evaluate")
+    parser.add_argument("--num_samples", type=int, default=None, help="Number of samples to evaluate (default: all)")
     args = parser.parse_args()
     evaluate_model(num_samples=args.num_samples)
