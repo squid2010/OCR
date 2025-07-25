@@ -4,7 +4,7 @@ import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.preprocessing.image import img_to_array, load_img
 from tensorflow.keras.utils import Sequence
-import cv2
+from PIL import Image, ImageEnhance
 import random
 
 # =========================
@@ -53,16 +53,17 @@ class OCRDataLoader:
         # Random brightness
         if random.random() < 0.3:
             factor = 0.7 + 0.6 * random.random()
-            img = cv2.convertScaleAbs(img, alpha=factor, beta=0)
+            enhancer = ImageEnhance.Brightness(Image.fromarray(img))
+            img = np.array(enhancer.enhance(factor))
         # Random rotation
         if random.random() < 0.3:
             angle = random.uniform(-5, 5)
-            M = cv2.getRotationMatrix2D((self.img_width // 2, self.img_height // 2), angle, 1)
-            img = cv2.warpAffine(img, M, (self.img_width, self.img_height), borderMode=cv2.BORDER_REPLICATE)
+            pil_img = Image.fromarray(img)
+            img = np.array(pil_img.rotate(angle, resample=Image.BILINEAR, fillcolor=255))
         # Random noise
         if random.random() < 0.2:
-            noise = np.random.normal(0, 8, img.shape).astype(np.uint8)
-            img = cv2.add(img, noise)
+            noise = np.random.normal(0, 8, img.shape).astype(np.int16)
+            img = np.clip(img.astype(np.int16) + noise, 0, 255).astype(np.uint8)
         # Random erasing
         if random.random() < 0.1:
             x = random.randint(0, self.img_width - 10)
@@ -74,20 +75,21 @@ class OCRDataLoader:
 
     def _preprocess_image(self, img_path):
         # Read image as grayscale
-        img = cv2.imread(os.path.join(self.images_dir, img_path), cv2.IMREAD_GRAYSCALE)
-        if img is None:
-            # If image is missing/corrupt, return blank
-            img = np.ones((self.img_height, self.img_width), dtype=np.uint8) * 255
+        img_fp = os.path.join(self.images_dir, img_path)
+        try:
+            img = Image.open(img_fp).convert("L")
+        except Exception:
+            img = Image.new("L", (self.img_width, self.img_height), 255)
         # Resize and pad
-        h, w = img.shape
+        w, h = img.size
         scale = min(self.img_width / w, self.img_height / h)
         nw, nh = int(w * scale), int(h * scale)
-        img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
-        canvas = np.ones((self.img_height, self.img_width), dtype=np.uint8) * 255
+        img = img.resize((nw, nh), Image.BILINEAR)
+        canvas = Image.new("L", (self.img_width, self.img_height), 255)
         x_offset = (self.img_width - nw) // 2
         y_offset = (self.img_height - nh) // 2
-        canvas[y_offset:y_offset+nh, x_offset:x_offset+nw] = img
-        img = canvas
+        canvas.paste(img, (x_offset, y_offset))
+        img = np.array(canvas)
         if self.augment:
             img = self._augment_image(img)
         img = img.astype(np.float32) / 255.0
@@ -221,19 +223,19 @@ def load_single_image(image_path, config):
     """
     img_height = getattr(config, "IMG_HEIGHT", 128)
     img_width = getattr(config, "IMG_WIDTH", 384)
-    import cv2
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        img = np.ones((img_height, img_width), dtype=np.uint8) * 255
-    h, w = img.shape
+    try:
+        img = Image.open(image_path).convert("L")
+    except Exception:
+        img = Image.new("L", (img_width, img_height), 255)
+    w, h = img.size
     scale = min(img_width / w, img_height / h)
     nw, nh = int(w * scale), int(h * scale)
-    img = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
-    canvas = np.ones((img_height, img_width), dtype=np.uint8) * 255
+    img = img.resize((nw, nh), Image.BILINEAR)
+    canvas = Image.new("L", (img_width, img_height), 255)
     x_offset = (img_width - nw) // 2
     y_offset = (img_height - nh) // 2
-    canvas[y_offset:y_offset+nh, x_offset:x_offset+nw] = img
-    img = canvas.astype(np.float32) / 255.0
+    canvas.paste(img, (x_offset, y_offset))
+    img = np.array(canvas).astype(np.float32) / 255.0
     img = np.expand_dims(img, axis=-1)
     return img
 

@@ -1,3 +1,3 @@
-Character Accuracy: 0.9010
-Word Accuracy:      0.8771
-Avg Edit Distance:  0.5271
+Character Accuracy: 0.8829
+Word Accuracy:      0.8586
+Avg Edit Distance:  0.6329

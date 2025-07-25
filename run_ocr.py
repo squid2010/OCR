@@ -795,9 +795,8 @@ def predict_cli(config, args):
     elif args.folder:
         # Batch prediction
         batch_predict(
-            folder=args.folder,
-            output_csv=args.output or "results.csv",
-            visualize=args.visualize
+            args.folder,
+            output_csv=args.output or "results.csv"
         )
         print(f"Batch prediction results saved to {args.output or 'results.csv'}")
     else:
